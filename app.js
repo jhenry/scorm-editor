@@ -24,6 +24,7 @@ const els = {
   typeFilter: document.getElementById("typeFilter"),
   listDisplayMode: document.getElementById("listDisplayMode"),
   cleanViewToggle: document.getElementById("cleanViewToggle"),
+  modifiedOnlyToggle: document.getElementById("modifiedOnlyToggle"),
 
   blockId: document.getElementById("blockId"),
   blockType: document.getElementById("blockType"),
@@ -48,6 +49,7 @@ const els = {
   diffChoices: document.getElementById("diffChoices"),
 
   applyBtn: document.getElementById("applyBtn"),
+  revertBtn: document.getElementById("revertBtn"),
   saveZipBtn: document.getElementById("saveZipBtn"),
   saveAsBtn: document.getElementById("saveAsBtn"),
 
@@ -73,7 +75,7 @@ const state = {
 };
 
 // ===== Helpers =====
-const MOD_STAR_SVG = `<svg class=\"mod-star\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"currentColor\" d=\"M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z\"/></svg>`;
+const MOD_TRI_SVG = `<svg class=\"mod-tri\" width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" aria-hidden=\"true\" focusable=\"false\" xmlns=\"http://www.w3.org/2000/svg\"><path fill=\"currentColor\" d=\"M12 4l10 18H2L12 4z\"/></svg>`;
 
 function setStatus(text) {
   els.status.textContent = text;
@@ -374,6 +376,7 @@ async function initBlockEditor() {
 
   tinymce.get("blockText").on("input change keyup", () => {
     if (state.activeTab === "diff") renderDiff();
+    renderList();
   });
 }
 
@@ -467,6 +470,7 @@ function renderChoices(item) {
       if (!item.choices[k]) item.choices[k] = {};
       item.choices[k].Display = input.value;
       if (state.activeTab === "diff") renderDiff();
+    renderList();
     });
 
     const del = document.createElement("button");
@@ -478,6 +482,7 @@ function renderChoices(item) {
       delete item.choices[k];
       renderChoices(item);
       if (state.activeTab === "diff") renderDiff();
+    renderList();
     });
 
     row.appendChild(keyEl);
@@ -547,10 +552,12 @@ function showValidation({ errors, warnings }) {
 function getFilteredIndexes() {
   const q = (els.searchInput.value || "").trim().toLowerCase();
   const type = els.typeFilter.value;
+  const modifiedOnly = Boolean(els.modifiedOnlyToggle?.checked);
 
   const result = [];
   state.surveyData.forEach((item, idx) => {
     if (type && item.type !== type) return;
+    if (modifiedOnly && !isItemModifiedByIndex(idx)) return;
     if (!q) {
       result.push(idx);
       return;
@@ -573,7 +580,7 @@ function renderList() {
     btn.type = "button";
 
     const label = `${item.id || `#${idx + 1}`}  ·  ${item.type || "?"}`;
-    const modified = isItemModifiedByIndex(idx) ? MOD_STAR_SVG : '';
+    const modified = isItemModifiedByIndex(idx) ? MOD_TRI_SVG : '';
     const displayHtml = getDisplayHtml(item.text);
     const previewText = mode === "snippet"
       ? getSnippetFromHtml(displayHtml, 70)
@@ -796,8 +803,41 @@ function enableControls(enabled) {
   els.blockText.disabled = !enabled;
   els.blockTextRaw.disabled = !enabled;
   els.applyBtn.disabled = !enabled;
+  if (els.revertBtn) els.revertBtn.disabled = !enabled;
   els.saveZipBtn.disabled = !enabled;
   els.saveAsBtn.disabled = !enabled;
+}
+
+
+function revertSelectedToOriginal() {
+  if (state.selectedIndex < 0) return;
+
+  const idx = state.selectedIndex;
+  const base = state.baseline[idx];
+  const item = state.surveyData[idx];
+  if (!base || !item) return;
+
+  // Restore block text
+  item.text = base.text;
+
+  // Restore choices
+  item.choices = {};
+  base.choices.forEach(({ k, d }) => {
+    item.choices[k] = { Display: d };
+  });
+
+  // Refresh editors/UI
+  setBlockHtml(item.text);
+  renderChoices(item);
+  showValidation({ errors: [], warnings: [] });
+  renderPreview(item);
+
+  // Refresh list and diff
+  renderList();
+  if (state.activeTab === "diff") renderDiff();
+    renderList();
+
+  setStatus("Reverted block to originally loaded content.");
 }
 
 // ===== Apply + Save =====
@@ -979,6 +1019,15 @@ els.applyBtn.addEventListener("click", () => {
   }
 });
 
+els.revertBtn.addEventListener("click", () => {
+  try {
+    revertSelectedToOriginal();
+  } catch (err) {
+    setStatus(`Error reverting: ${err.message}`);
+  }
+});
+
+
 els.saveZipBtn.addEventListener("click", async () => {
   try {
     await downloadUpdatedZip();
@@ -998,14 +1047,22 @@ els.saveAsBtn.addEventListener("click", async () => {
 els.searchInput.addEventListener("input", () => renderList());
 els.typeFilter.addEventListener("change", () => renderList());
 els.listDisplayMode.addEventListener("change", () => renderList());
+
+els.blockTextRaw.addEventListener("input", () => {
+  if (state.activeTab === "diff") renderDiff();
+  renderList();
+});
 els.cleanViewToggle.addEventListener("change", () => {
   state.cleanView = Boolean(els.cleanViewToggle.checked);
   renderList();
   if (state.selectedIndex >= 0) {
     renderPreview(state.surveyData[state.selectedIndex]);
     if (state.activeTab === "diff") renderDiff();
+    renderList();
   }
 });
+
+els.modifiedOnlyToggle.addEventListener("change", () => renderList());
 
 els.addChoiceBtn.addEventListener("click", () => {
   if (state.selectedIndex < 0) return;
@@ -1017,6 +1074,7 @@ els.addChoiceBtn.addEventListener("click", () => {
   item.choices[k] = { Display: "" };
   renderChoices(item);
   if (state.activeTab === "diff") renderDiff();
+    renderList();
 });
 
 els.renumberChoicesBtn.addEventListener("click", () => {
@@ -1027,6 +1085,7 @@ els.renumberChoicesBtn.addEventListener("click", () => {
   renumberChoices(item);
   renderChoices(item);
   if (state.activeTab === "diff") renderDiff();
+    renderList();
 });
 
 bindTabs();

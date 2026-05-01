@@ -351,8 +351,18 @@ body {
 .banner-actions { display: flex; gap: 8px; }
 
 
-.mod-star {
+
+
+/* Modified indicator (triangle SVG) */
+.mod-tri {
   vertical-align: -2px;
   color: #fbbf24;
   margin-left: 6px;
+}
+
+.editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 10px;
 }

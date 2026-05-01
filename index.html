@@ -122,6 +122,11 @@
               <input id="cleanViewToggle" type="checkbox" checked />
               Clean display view (recommended for Qualtrics HTML)
             </label>
+
+            <label class="toggle">
+              <input id="modifiedOnlyToggle" type="checkbox" />
+              Show modified only
+            </label>
           </div>
 
           <div id="blockList" class="list" aria-label="Block list"></div>
@@ -193,6 +198,7 @@
           </section>
 
           <div class="editor-actions">
+            <button id="revertBtn" class="button" disabled title="Restore this block to the originally loaded content">Revert to original</button>
             <button id="applyBtn" class="button button-primary" disabled>Apply Changes to Model</button>
           </div>
         </div>
