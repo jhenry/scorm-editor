@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SCORM Text Editor</title>
+    <link rel="stylesheet" href="styles.css" />
+
+    <!-- Local-first vendor libraries -->
+    <script src="vendor/jszip.min.js"></script>
+    <script src="vendor/json5.min.js"></script>
+    <script src="tinymce/tinymce.min.js"></script>
+
+    <script>
+      // If local libs are missing, show a helpful banner and allow optional CDN loading.
+      (function () {
+        const CDN = {
+          jszip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js',
+          json5: 'https://cdnjs.cloudflare.com/ajax/libs/json5/2.2.3/index.min.js',
+          tinymce: 'https://cdnjs.cloudflare.com/ajax/libs/tinymce/8.1.2/tinymce.min.js'
+        };
+
+        function loadScript(src) {
+          return new Promise((resolve, reject) => {
+            const s = document.createElement('script');
+            s.src = src;
+            s.async = false;
+            s.onload = resolve;
+            s.onerror = reject;
+            document.head.appendChild(s);
+          });
+        }
+
+        window.__ensureVendors = async function () {
+          const missing = [];
+          if (!window.JSZip) missing.push('JSZip');
+          if (!window.JSON5) missing.push('JSON5');
+          if (!window.tinymce) missing.push('TinyMCE');
+          if (!missing.length) return { ok: true, missing: [] };
+
+          return { ok: false, missing };
+        };
+
+        window.__loadVendorsFromCDN = async function () {
+          await loadScript(CDN.jszip);
+          await loadScript(CDN.json5);
+          await loadScript(CDN.tinymce);
+          return true;
+        };
+      })();
+    </script>
+  </head>
+
+  <body>
+    <header class="app-header">
+      <h1>SCORM Text Editor</h1>
+
+      <div class="actions">
+        <label class="button">
+          Open SCORM ZIP
+          <input id="zipInput" type="file" accept=".zip" />
+        </label>
+
+        <button id="saveZipBtn" class="button button-primary" disabled>
+          Download Updated SCORM ZIP
+        </button>
+
+        <button id="saveAsBtn" class="button" disabled title="Chromium only">
+          Save As (File System API)
+        </button>
+      </div>
+    </header>
+
+    <div id="vendorBanner" class="banner hidden">
+      <div>
+        <strong>Local vendor libraries not found.</strong>
+        <div class="banner-text">
+          Run <code>bash scripts/bootstrap.sh</code> to download them, or click “Load from CDN” to use online copies.
+        </div>
+        <div class="banner-text">
+          Missing: <span id="missingVendors"></span>
+        </div>
+      </div>
+      <div class="banner-actions">
+        <button id="loadCdnBtn" class="button">Load from CDN</button>
+      </div>
+    </div>
+
+    <main class="layout">
+      <aside class="sidebar">
+        <div class="panel">
+          <h2>Package</h2>
+          <div class="meta">
+            <div><strong>Status:</strong> <span id="status">No package loaded</span></div>
+            <div><strong>SCORM:</strong> <span id="scormVersion">—</span></div>
+            <div><strong>imsmanifest.xml:</strong> <span id="manifestPath">—</span></div>
+            <div><strong>data.js:</strong> <span id="dataJsPath">—</span></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Blocks</h2>
+
+          <div class="filters">
+            <input id="searchInput" type="search" placeholder="Search by id or text..." />
+
+            <select id="typeFilter">
+              <option value="">All types</option>
+              <option value="DB">DB (Display)</option>
+              <option value="MC">MC (Choice)</option>
+              <option value="TE">TE (Text entry)</option>
+              <option value="CS">CS</option>
+              <option value="SBS">SBS</option>
+            </select>
+
+            <select id="listDisplayMode">
+              <option value="firstLine" selected>List display: First line (default)</option>
+              <option value="snippet">List display: Snippet</option>
+            </select>
+
+            <label class="toggle">
+              <input id="cleanViewToggle" type="checkbox" checked />
+              Clean display view (recommended for Qualtrics HTML)
+            </label>
+          </div>
+
+          <div id="blockList" class="list" aria-label="Block list"></div>
+        </div>
+      </aside>
+
+      <section class="content">
+        <div class="panel">
+          <h2>Editor</h2>
+
+          <div class="grid-two">
+            <div class="field">
+              <label for="blockId">ID</label>
+              <input id="blockId" type="text" disabled />
+            </div>
+            <div class="field">
+              <label for="blockType">Type</label>
+              <input id="blockType" type="text" disabled />
+            </div>
+          </div>
+
+          <div class="tabs" role="tablist" aria-label="Editor tabs">
+            <button id="tabWysiwyg" class="tab" type="button" role="tab" aria-selected="true">WYSIWYG</button>
+            <button id="tabRaw" class="tab" type="button" role="tab" aria-selected="false">Raw HTML</button>
+            <button id="tabDiff" class="tab" type="button" role="tab" aria-selected="false">Diff</button>
+          </div>
+
+          <section id="panelWysiwyg" class="tab-panel" role="tabpanel">
+            <div class="field">
+              <label for="blockText">Block Text (HTML)</label>
+              <textarea id="blockText" disabled></textarea>
+              <p class="hint">WYSIWYG applies to <code>text</code> only. Choices are plain text inputs.</p>
+            </div>
+
+            <div class="panel-sub">
+              <div class="choices-header">
+                <h3>Choices (plain text)</h3>
+                <div class="choices-actions">
+                  <button id="addChoiceBtn" class="button" disabled>Add choice</button>
+                  <button id="renumberChoicesBtn" class="button" disabled>Renumber</button>
+                </div>
+              </div>
+              <div id="choicesEditor" class="choices"></div>
+              <div id="validationBox" class="validation hidden"></div>
+              <p id="choicesHint" class="hint"></p>
+            </div>
+          </section>
+
+          <section id="panelRaw" class="tab-panel hidden" role="tabpanel">
+            <div class="field">
+              <label for="blockTextRaw">Block Text (Raw HTML)</label>
+              <textarea id="blockTextRaw" class="rawarea" disabled></textarea>
+              <p class="hint">Raw view shows exact HTML source. Clean view does not affect Raw.</p>
+            </div>
+          </section>
+
+          <section id="panelDiff" class="tab-panel hidden" role="tabpanel">
+            <div class="panel-sub">
+              <h3>Block Text Diff (<code>text</code>)</h3>
+              <div id="diffBlock" class="diff"></div>
+            </div>
+
+            <div class="panel-sub">
+              <h3>Choices Diff (<code>choices[k].Display</code>)</h3>
+              <div id="diffChoices" class="diff"></div>
+            </div>
+
+            <p class="hint">Diff baseline is the loaded original. Clean view affects diff display only.</p>
+          </section>
+
+          <div class="editor-actions">
+            <button id="applyBtn" class="button button-primary" disabled>Apply Changes to Model</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h2>Preview (rendered)</h2>
+          <iframe id="previewFrame" class="preview" title="Preview"></iframe>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
