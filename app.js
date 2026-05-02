@@ -20,6 +20,10 @@ const els = {
   loadCdnBtn: document.getElementById("loadCdnBtn"),
 
   blockList: document.getElementById("blockList"),
+  addBlockBtn: document.getElementById("addBlockBtn"),
+  removeBlockBtn: document.getElementById("removeBlockBtn"),
+  moveUpBtn: document.getElementById("moveUpBtn"),
+  moveDownBtn: document.getElementById("moveDownBtn"),
   searchInput: document.getElementById("searchInput"),
   typeFilter: document.getElementById("typeFilter"),
   listDisplayMode: document.getElementById("listDisplayMode"),
@@ -66,6 +70,11 @@ const state = {
   varName: "surveyData",
   surveyData: [],
   selectedIndex: -1,
+  selectedUid: null,
+  uidCounter: 1,
+  dragUid: null,
+  assetByObjectUrl: new Map(),
+  assetSeq: 1,
   filteredIndexes: [],
   activeTab: "wysiwyg",
   cleanView: Boolean(els.cleanViewToggle?.checked),
@@ -95,6 +104,16 @@ function normalizeSpaces(str) {
 }
 
 
+
+function ensureUid(item) {
+  if (!item) return null;
+  if (!item.__uid) {
+    item.__uid = `uid_${state.uidCounter}`;
+    state.uidCounter += 1;
+  }
+  return item.__uid;
+}
+
 function snapshotItem(item) {
   return {
     text: String(item?.text ?? ''),
@@ -108,6 +127,35 @@ function snapshotItem(item) {
   };
 }
 
+
+function safeFileName(name) {
+  const base = String(name || 'file').replace(/[^A-Za-z0-9._-]+/g, '_');
+  return base.length ? base : 'file';
+}
+
+function registerAsset(file) {
+  const safe = safeFileName(file.name);
+  const ext = safe.includes('.') ? safe.split('.').pop() : '';
+  const stamp = Date.now();
+  const seq = state.assetSeq;
+  state.assetSeq += 1;
+  const outName = `${stamp}-${seq}-${safe}`;
+  const relPath = `assets/${outName}`;
+
+  const objUrl = URL.createObjectURL(file);
+  state.assetByObjectUrl.set(objUrl, { file, relPath, mime: file.type || 'application/octet-stream' });
+  return { objUrl, relPath };
+}
+
+function rewriteObjectUrlsToRelative(html) {
+  // Replace any object URLs we registered with their final relative paths
+  let out = String(html || '');
+  state.assetByObjectUrl.forEach((meta, objUrl) => {
+    // Replace src/href occurrences
+    out = out.split(objUrl).join(meta.relPath);
+  });
+  return out;
+}
 function isItemModifiedByIndex(idx) {
   const base = state.baseline[idx];
   const cur = state.surveyData[idx];
@@ -365,11 +413,29 @@ async function initBlockEditor() {
     license_key: APP_CONFIG.tinymceLicenseKey,
     menubar: false,
     branding: false,
-    plugins: "link lists code table",
-    toolbar:
-      "undo redo | bold italic underline | bullist numlist | link | table | removeformat | code",
+    plugins: "link lists code table image media",
+    toolbar: "undo redo | bold italic underline | bullist numlist | link | table | removeformat | code | image media",
     height: 360,
-    valid_elements: "*[*]"
+    valid_elements: "*[*]",
+    file_picker_types: 'image media',
+    images_upload_handler: (blobInfo) => new Promise((resolve) => {
+      const blob = blobInfo.blob();
+      const file = new File([blob], blobInfo.filename(), { type: blob.type || 'image/png' });
+      const reg = registerAsset(file);
+      resolve(reg.objUrl);
+    }),
+    file_picker_callback: (callback, _value, meta) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = meta.filetype === 'image' ? 'image/*' : 'video/*,audio/*';
+      input.onchange = () => {
+        const file = input.files && input.files[0];
+        if (!file) return;
+        const reg = registerAsset(file);
+        callback(reg.objUrl, { title: file.name });
+      };
+      input.click();
+    }
   });
 
   state.tinymceReady = true;
@@ -378,6 +444,7 @@ async function initBlockEditor() {
     if (state.activeTab === "diff") renderDiff();
     renderList();
   });
+  ensureSelectionVisible();
 }
 
 function getCurrentBlockHtml() {
@@ -557,6 +624,7 @@ function getFilteredIndexes() {
   const result = [];
   state.surveyData.forEach((item, idx) => {
     if (type && item.type !== type) return;
+    if (modifiedOnly && !isItemModified(item)) return;
     if (modifiedOnly && !isItemModifiedByIndex(idx)) return;
     if (!q) {
       result.push(idx);
@@ -576,8 +644,51 @@ function renderList() {
 
   state.filteredIndexes.forEach((idx) => {
     const item = state.surveyData[idx];
+    ensureUid(item);
     const btn = document.createElement("button");
     btn.type = "button";
+
+    // Drag/drop reorder
+    btn.draggable = true;
+    btn.classList.add('draggable-item');
+    btn.addEventListener('dragstart', (ev) => {
+      state.dragUid = item.__uid;
+      ev.dataTransfer.effectAllowed = 'move';
+      try { ev.dataTransfer.setData('text/plain', item.__uid); } catch {}
+      btn.classList.add('dragging');
+    });
+
+    btn.addEventListener('dragend', () => {
+      state.dragUid = null;
+      btn.classList.remove('dragging');
+      document.querySelectorAll('.drop-above, .drop-below').forEach((el) => { el.classList.remove('drop-above'); el.classList.remove('drop-below'); });
+    });
+
+    btn.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      const rect = btn.getBoundingClientRect();
+      const placeAfter = (ev.clientY - rect.top) > rect.height / 2;
+      btn.classList.toggle('drop-above', !placeAfter);
+      btn.classList.toggle('drop-below', placeAfter);
+      ev.dataTransfer.dropEffect = 'move';
+    });
+
+    btn.addEventListener('dragleave', () => {
+      btn.classList.remove('drop-above');
+      btn.classList.remove('drop-below');
+    });
+
+    btn.addEventListener('drop', (ev) => {
+      ev.preventDefault();
+      const dragUid = state.dragUid || ev.dataTransfer.getData('text/plain');
+      const targetUid = item.__uid;
+      const rect = btn.getBoundingClientRect();
+      const placeAfter = (ev.clientY - rect.top) > rect.height / 2;
+      btn.classList.remove('drop-above');
+      btn.classList.remove('drop-below');
+      if (!dragUid || !targetUid || dragUid === targetUid) return;
+      moveBlockByUid(dragUid, targetUid, placeAfter);
+    });
 
     const label = `${item.id || `#${idx + 1}`}  ·  ${item.type || "?"}`;
     const modified = isItemModifiedByIndex(idx) ? MOD_TRI_SVG : '';
@@ -587,12 +698,31 @@ function renderList() {
       : getFirstMeaningfulLineFromHtml(displayHtml);
 
     btn.innerHTML = `<strong>${escapeHtml(label)} ${modified}</strong><br><span class="badge">${escapeHtml(previewText)}</span>`;
-    btn.setAttribute("aria-current", idx === state.selectedIndex ? "true" : "false");
+    btn.setAttribute("aria-current", (state.selectedUid && item.__uid === state.selectedUid) ? "true" : "false");
     btn.addEventListener("click", () => selectItem(idx));
 
     els.blockList.appendChild(btn);
   });
 }
+
+function ensureSelectionVisible() {
+  const modifiedOnly = Boolean(els.modifiedOnlyToggle?.checked);
+  if (!modifiedOnly) return;
+  if (state.selectedIndex < 0) {
+    if (state.filteredIndexes.length) selectItem(state.filteredIndexes[0]);
+    return;
+  }
+  if (!state.filteredIndexes.includes(state.selectedIndex)) {
+    if (state.filteredIndexes.length) selectItem(state.filteredIndexes[0]);
+    else {
+      state.selectedIndex = -1;
+      state.selectedUid = null;
+      renderList();
+      setStatus('No modified blocks.');
+    }
+  }
+}
+
 
 // ===== Preview =====
 function renderPreview(item) {
@@ -772,10 +902,13 @@ function syncEditors(targetTab) {
 }
 
 async function selectItem(idx) {
-  state.selectedIndex = idx;
-  renderList();
-
   const item = state.surveyData[idx];
+  ensureUid(item);
+
+  state.selectedIndex = idx;
+  state.selectedUid = item.__uid;
+  renderList();
+  renderList();
   els.blockId.value = item.id || "";
   els.blockType.value = item.type || "";
 
@@ -847,7 +980,7 @@ function applyChangesToModel() {
   const item = state.surveyData[state.selectedIndex];
 
   // Update model from editors
-  item.text = getCurrentBlockHtml();
+  item.text = rewriteObjectUrlsToRelative(getCurrentBlockHtml());
   readChoiceInputs();
 
   const report = validateItem(item);
@@ -863,6 +996,14 @@ function applyChangesToModel() {
   renderList();
 }
 
+
+function addAssetsToZip(zip) {
+  // Writes registered assets into the output SCORM zip.
+  // Note: assets referenced by relative path in HTML.
+  state.assetByObjectUrl.forEach((meta) => {
+    zip.file(meta.relPath, meta.file);
+  });
+}
 function buildUpdatedDataJs() {
   const json = JSON.stringify(state.surveyData, null, 2);
   return `${state.keyword || "const"} ${state.varName || "surveyData"} = ${json};\n`;
@@ -881,6 +1022,10 @@ async function downloadUpdatedZip() {
   }
 
   state.zip.file(state.dataJsPath, buildUpdatedDataJs());
+
+  // Include any newly-added media assets
+  addAssetsToZip(state.zip);
+  addAssetsToZip(state.zip);
 
   const blob = await state.zip.generateAsync({ type: "blob" });
   const outName = state.zipName
@@ -911,6 +1056,10 @@ async function saveAsWithFileSystemApi() {
   if (report.errors.length) return;
 
   state.zip.file(state.dataJsPath, buildUpdatedDataJs());
+
+  // Include any newly-added media assets
+  addAssetsToZip(state.zip);
+  addAssetsToZip(state.zip);
 
   const blob = await state.zip.generateAsync({ type: "blob" });
   const suggestedName = (state.zipName || "scorm.zip").replace(/\.zip$/i, "") + "-edited.zip";
@@ -950,6 +1099,13 @@ async function loadZipFile(file) {
   const parsed = extractSurveyDataFromJs(jsText);
 
   state.surveyData = parsed.arr;
+
+  // Assign UIDs + baseline snapshots
+  state.baselineByUid = new Map();
+  state.surveyData.forEach((it) => {
+    ensureUid(it);
+    state.baselineByUid.set(it.__uid, snapshotItem(it));
+  });
 
   // Baseline snapshot for modified indicators
   state.baseline = state.surveyData.map((it) => snapshotItem(it));
@@ -996,6 +1152,53 @@ els.loadCdnBtn.addEventListener("click", async () => {
     // keep banner
   }
 });
+
+function indexByUid(uid) { return state.surveyData.findIndex((it) => it && it.__uid === uid); }
+
+function moveBlockByUid(dragUid, targetUid, placeAfter) {
+  const from = indexByUid(dragUid);
+  const to = indexByUid(targetUid);
+  if (from < 0 || to < 0 || from === to) return;
+  const moved = state.surveyData.splice(from, 1)[0];
+  const to2 = indexByUid(targetUid);
+  if (to2 < 0) state.surveyData.push(moved);
+  else state.surveyData.splice(placeAfter ? to2 + 1 : to2, 0, moved);
+  const newIndex = indexByUid(dragUid);
+  if (newIndex >= 0) selectItem(newIndex);
+  else renderList();
+}
+
+function defaultBlockTemplate(type) {
+  const id = `NEW_${state.uidCounter}`;
+  if (type === 'MC') return { id, type: 'MC', selector: 'SAVR', text: '<p>New multiple choice question</p>', choices: { '1': { Display: 'Option 1' }, '2': { Display: 'Option 2' } } };
+  if (type === 'TE') return { id, type: 'TE', text: '<p>New text entry question</p>' };
+  return { id, type: 'DB', text: '<p>New display block</p>' };
+}
+
+function insertBlockAfter(index, type) {
+  const nb = defaultBlockTemplate(type);
+  ensureUid(nb);
+  state.surveyData.splice(index + 1, 0, nb);
+  renderList();
+  selectItem(index + 1);
+}
+
+function removeBlockAt(index) {
+  state.surveyData.splice(index, 1);
+  const next = Math.min(index, state.surveyData.length - 1);
+  if (next >= 0) selectItem(next);
+  else { state.selectedIndex = -1; state.selectedUid = null; renderList(); }
+}
+
+function moveBlock(index, direction) {
+  const ni = index + direction;
+  if (ni < 0 || ni >= state.surveyData.length) return;
+  const tmp = state.surveyData[index];
+  state.surveyData[index] = state.surveyData[ni];
+  state.surveyData[ni] = tmp;
+  renderList();
+  selectItem(ni);
+}
 
 // ===== Event wiring =====
 els.zipInput.addEventListener("change", async (e) => {
@@ -1091,3 +1294,22 @@ els.renumberChoicesBtn.addEventListener("click", () => {
 bindTabs();
 checkVendorsAndMaybeBanner();
 enableControls(false);
+
+
+els.addBlockBtn.addEventListener('click', () => {
+  if (state.selectedIndex < 0) return;
+  const type = window.prompt('Enter block type to add (DB, MC, TE):', 'DB');
+  const t = (type || 'DB').trim().toUpperCase();
+  if (!['DB','MC','TE'].includes(t)) return;
+  insertBlockAfter(state.selectedIndex, t);
+});
+
+els.removeBlockBtn.addEventListener('click', () => {
+  if (state.selectedIndex < 0) return;
+  if (!window.confirm('Remove this block?')) return;
+  removeBlockAt(state.selectedIndex);
+});
+
+els.moveUpBtn.addEventListener('click', () => { if (state.selectedIndex < 0) return; moveBlock(state.selectedIndex, -1); });
+
+els.moveDownBtn.addEventListener('click', () => { if (state.selectedIndex < 0) return; moveBlock(state.selectedIndex, 1); });
