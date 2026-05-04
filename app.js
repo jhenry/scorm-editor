@@ -1293,6 +1293,7 @@ els.zipInput.addEventListener("change", async (e) => {
   try {
     await loadZipFile(file);
   } catch (err) {
+     console.error(err);
     setStatus(`Error: ${err.message}`);
     enableControls(false);
     els.blockList.innerHTML = "";
@@ -1303,6 +1304,7 @@ els.applyBtn.addEventListener("click", () => {
   try {
     applyChangesToModel();
   } catch (err) {
+    console.error(err);
     setStatus(`Error applying changes: ${err.message}`);
   }
 });
@@ -1311,6 +1313,7 @@ els.revertBtn.addEventListener("click", () => {
   try {
     revertSelectedToOriginal();
   } catch (err) {
+    console.error(err);
     setStatus(`Error reverting: ${err.message}`);
   }
 });
@@ -1320,6 +1323,7 @@ els.saveZipBtn.addEventListener("click", async () => {
   try {
     await downloadUpdatedZip();
   } catch (err) {
+    console.error(err);
     setStatus(`Error saving ZIP: ${err.message}`);
   }
 });
@@ -1328,6 +1332,7 @@ els.saveAsBtn.addEventListener("click", async () => {
   try {
     await saveAsWithFileSystemApi();
   } catch (err) {
+    console.error(err);
     setStatus(`Error with Save As: ${err.message}`);
   }
 });
