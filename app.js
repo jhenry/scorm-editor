@@ -20,8 +20,7 @@ const els = {
   loadCdnBtn: document.getElementById("loadCdnBtn"),
 
   blockList: document.getElementById("blockList"),
-  addBlockBtn: document.getElementById("addBlockBtn"),
-  removeBlockBtn: document.getElementById("removeBlockBtn"),
+  addBlockTypeSelect: document.getElementById("addBlockTypeSelect"),
   moveUpBtn: document.getElementById("moveUpBtn"),
   moveDownBtn: document.getElementById("moveDownBtn"),
   searchInput: document.getElementById("searchInput"),
@@ -157,21 +156,21 @@ function rewriteObjectUrlsToRelative(html) {
   return out;
 }
 function isItemModifiedByIndex(idx) {
-  const base = state.baseline[idx];
   const cur = state.surveyData[idx];
-  if (!base || !cur) return false;
+  if (!cur) return false;
+  const base = state.baselineByUid?.get(cur.__uid);
+  if (!base) return true; // new blocks
 
   const now = snapshotItem(cur);
   if (base.text !== now.text) return true;
   if (base.choices.length !== now.choices.length) return true;
-
   for (let i = 0; i < base.choices.length; i += 1) {
     if (base.choices[i].k !== now.choices[i].k) return true;
     if (base.choices[i].d !== now.choices[i].d) return true;
   }
-
   return false;
 }
+
 
 // Updated per your request: ASCII-safe, robust empty-content patterns.
 // Note: This matches real innerHTML (not HTML-escaped source).
@@ -467,6 +466,13 @@ function isChoiceQuestion(item) {
   return item && item.type === "MC";
 }
 
+function getDisplayType(item) {
+  if (!item) return '';
+  if (item.type === 'MC' && String(item.selector || '').toUpperCase() === 'MAVR') return 'MS';
+  return item.type || '';
+}
+
+
 function normalizeChoices(item) {
   if (!item) return;
   // Some exports may have choices as [] or null
@@ -623,7 +629,10 @@ function getFilteredIndexes() {
 
   const result = [];
   state.surveyData.forEach((item, idx) => {
-    if (type && item.type !== type) return;
+    if (type) {
+      const dt = getDisplayType(item);
+      if (type !== dt) return;
+    }
     if (modifiedOnly && !isItemModified(item)) return;
     if (modifiedOnly && !isItemModifiedByIndex(idx)) return;
     if (!q) {
@@ -645,8 +654,43 @@ function renderList() {
   state.filteredIndexes.forEach((idx) => {
     const item = state.surveyData[idx];
     ensureUid(item);
-    const btn = document.createElement("button");
-    btn.type = "button";
+    const row = document.createElement('div');
+    row.className = 'list-row';
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'list-item-btn';
+
+    // ---- Label + snippet (restored) ----
+    const typeLabel = (typeof getDisplayType === 'function')
+      ? (getDisplayType(item) || '?')
+      : (item.type || '?');
+
+    const label = `${item.id || `#${idx + 1}`}  ·  ${typeLabel}`;
+
+    const modified = (typeof isItemModifiedByIndex === 'function' && isItemModifiedByIndex(idx))
+      ? (typeof MOD_TRI_SVG !== 'undefined' ? MOD_TRI_SVG : '')
+      : '';
+
+    const displayHtml = (typeof getDisplayHtml === 'function')
+      ? getDisplayHtml(item.text)
+      : (item.text || '');
+
+    const previewText = (mode === 'snippet')
+      ? (typeof getSnippetFromHtml === 'function' ? getSnippetFromHtml(displayHtml, 70) : '')
+      : (typeof getFirstMeaningfulLineFromHtml === 'function' ? getFirstMeaningfulLineFromHtml(displayHtml) : '');
+
+    btn.innerHTML =
+      `<strong>${escapeHtml(label)} ${modified}</strong>` +
+      `<br><span class="badge">${escapeHtml(previewText)}</span>`;
+
+    btn.setAttribute(
+      'aria-current',
+      (state.selectedUid && item.__uid === state.selectedUid) ? 'true' : 'false'
+    );
+
+    btn.addEventListener('click', () => selectItem(idx));
+
 
     // Drag/drop reorder
     btn.draggable = true;
@@ -661,7 +705,10 @@ function renderList() {
     btn.addEventListener('dragend', () => {
       state.dragUid = null;
       btn.classList.remove('dragging');
-      document.querySelectorAll('.drop-above, .drop-below').forEach((el) => { el.classList.remove('drop-above'); el.classList.remove('drop-below'); });
+      document.querySelectorAll('.drop-above, .drop-below').forEach((el) => {
+        el.classList.remove('drop-above');
+        el.classList.remove('drop-below');
+      });
     });
 
     btn.addEventListener('dragover', (ev) => {
@@ -690,18 +737,27 @@ function renderList() {
       moveBlockByUid(dragUid, targetUid, placeAfter);
     });
 
-    const label = `${item.id || `#${idx + 1}`}  ·  ${item.type || "?"}`;
-    const modified = isItemModifiedByIndex(idx) ? MOD_TRI_SVG : '';
-    const displayHtml = getDisplayHtml(item.text);
-    const previewText = mode === "snippet"
-      ? getSnippetFromHtml(displayHtml, 70)
-      : getFirstMeaningfulLineFromHtml(displayHtml);
+    // Trash button
+    const trash = document.createElement('button');
+    trash.type = 'button';
+    trash.className = 'icon-btn trash';
+    trash.title = 'Remove block';
+    trash.innerHTML = '&#128465;';
+    trash.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      if (state.selectedIndex < 0) return;
+      // compute current index by uid (in case of filtering)
+      const idxNow = indexByUid(item.__uid);
+      if (idxNow < 0) return;
+      if (!window.confirm('Remove this block?')) return;
+      removeBlockAt(idxNow);
+      updateBlockActionButtons();
+    });
 
-    btn.innerHTML = `<strong>${escapeHtml(label)} ${modified}</strong><br><span class="badge">${escapeHtml(previewText)}</span>`;
-    btn.setAttribute("aria-current", (state.selectedUid && item.__uid === state.selectedUid) ? "true" : "false");
-    btn.addEventListener("click", () => selectItem(idx));
+    row.appendChild(btn);
+    row.appendChild(trash);
 
-    els.blockList.appendChild(btn);
+    els.blockList.appendChild(row);
   });
 }
 
@@ -730,11 +786,13 @@ function renderPreview(item) {
     ? item.choices
     : null;
 
-  const isChoice = item?.type === 'MC' && choices;
   const selector = String(item?.selector ?? '').toUpperCase();
   const isMulti = selector === 'MAVR';
   const inputType = isMulti ? 'checkbox' : 'radio';
   const groupName = `preview-${String(item?.id ?? 'choice').replace(/\s+/g, '-')}`;
+
+  const isChoice = item?.type === 'MC' && choices;
+  const isTextEntry = item?.type === 'TE';
 
   const choiceHtml = isChoice
     ? sortedChoiceKeys(choices)
@@ -747,12 +805,20 @@ function renderPreview(item) {
       .join("")
     : "";
 
+  const teHtml = isTextEntry
+    ? `<div style="margin-top:16px;">
+        <label style="display:block;margin-bottom:6px;font-weight:600;">Answer</label>
+        <input type="text" style="width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;" />
+      </div>`
+    : "";
+
   const doc = `<!doctype html>
 <html>
 <head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
 <body style="background:#ffffff;color:#000000;font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px;">
   <article>${getDisplayHtml(item.text)}</article>
   ${choiceHtml ? `<form style="margin-top:16px;">${choiceHtml}</form>` : ""}
+  ${teHtml}
 </body>
 </html>`;
 
@@ -761,6 +827,7 @@ function renderPreview(item) {
   els.previewFrame.src = url;
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
+
 
 // ===== Diff =====
 function tokenizeWords(str) {
@@ -910,7 +977,7 @@ async function selectItem(idx) {
   renderList();
   renderList();
   els.blockId.value = item.id || "";
-  els.blockType.value = item.type || "";
+  els.blockType.value = getDisplayType(item) || "";
 
   // Capture loaded-original snapshot
   state.original.text = item.text || "";
@@ -930,7 +997,21 @@ async function selectItem(idx) {
   renderPreview(item);
   enableControls(true);
   setActiveTab(state.activeTab || "wysiwyg");
+  updateBlockActionButtons();
 }
+
+function updateBlockActionButtons() {
+  const hasSelection = state.selectedIndex >= 0 && state.selectedIndex < state.surveyData.length;
+
+  if (els.addBlockTypeSelect) {
+    // Enable dropdown only when a block is selected (we insert after selection)
+    els.addBlockTypeSelect.disabled = !hasSelection;
+  }
+
+  if (els.moveUpBtn) els.moveUpBtn.disabled = !hasSelection || state.selectedIndex === 0;
+  if (els.moveDownBtn) els.moveDownBtn.disabled = !hasSelection || state.selectedIndex === state.surveyData.length - 1;
+}
+
 
 function enableControls(enabled) {
   els.blockText.disabled = !enabled;
@@ -939,6 +1020,7 @@ function enableControls(enabled) {
   if (els.revertBtn) els.revertBtn.disabled = !enabled;
   els.saveZipBtn.disabled = !enabled;
   els.saveAsBtn.disabled = !enabled;
+  updateBlockActionButtons();
 }
 
 
@@ -1170,6 +1252,9 @@ function moveBlockByUid(dragUid, targetUid, placeAfter) {
 
 function defaultBlockTemplate(type) {
   const id = `NEW_${state.uidCounter}`;
+  if (type === 'MS') {
+    return { id, type: 'MC', selector: 'MAVR', text: '<p>New multiple select question</p>', choices: { '1': { Display: 'Option 1' }, '2': { Display: 'Option 2' } } };
+  }
   if (type === 'MC') return { id, type: 'MC', selector: 'SAVR', text: '<p>New multiple choice question</p>', choices: { '1': { Display: 'Option 1' }, '2': { Display: 'Option 2' } } };
   if (type === 'TE') return { id, type: 'TE', text: '<p>New text entry question</p>' };
   return { id, type: 'DB', text: '<p>New display block</p>' };
@@ -1248,6 +1333,26 @@ els.saveAsBtn.addEventListener("click", async () => {
 });
 
 els.searchInput.addEventListener("input", () => renderList());
+
+// Add block dropdown
+if (els.addBlockTypeSelect) {
+  els.addBlockTypeSelect.addEventListener('change', () => {
+    if (state.selectedIndex < 0) {
+      // reset
+      els.addBlockTypeSelect.value = '';
+      return;
+    }
+
+    const t = String(els.addBlockTypeSelect.value || '').trim().toUpperCase();
+    // reset selection back to placeholder immediately
+    els.addBlockTypeSelect.value = '';
+
+    if (!['DB', 'MC', 'MS', 'TE'].includes(t)) return;
+    insertBlockAfter(state.selectedIndex, t);
+    updateBlockActionButtons();
+  });
+}
+
 els.typeFilter.addEventListener("change", () => renderList());
 els.listDisplayMode.addEventListener("change", () => renderList());
 
@@ -1296,19 +1401,9 @@ checkVendorsAndMaybeBanner();
 enableControls(false);
 
 
-els.addBlockBtn.addEventListener('click', () => {
-  if (state.selectedIndex < 0) return;
-  const type = window.prompt('Enter block type to add (DB, MC, TE):', 'DB');
-  const t = (type || 'DB').trim().toUpperCase();
-  if (!['DB','MC','TE'].includes(t)) return;
-  insertBlockAfter(state.selectedIndex, t);
-});
 
-els.removeBlockBtn.addEventListener('click', () => {
-  if (state.selectedIndex < 0) return;
-  if (!window.confirm('Remove this block?')) return;
-  removeBlockAt(state.selectedIndex);
-});
+
+
 
 els.moveUpBtn.addEventListener('click', () => { if (state.selectedIndex < 0) return; moveBlock(state.selectedIndex, -1); });
 

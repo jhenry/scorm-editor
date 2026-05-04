@@ -130,9 +130,18 @@
           </div>
 
           <div class="block-actions">
-  <button id="addBlockBtn" class="button" disabled>Add block</button>
-  <button id="removeBlockBtn" class="button" disabled>Remove block</button>
-  <button id="moveUpBtn" class="button" disabled>Move up</button>
+<div class="add-block-row">
+  <label for="addBlockTypeSelect">Add block:</label>
+  <select id="addBlockTypeSelect" disabled>
+    <option value="" selected disabled>Add block…</option>
+    <option value="DB">Display/content</option>
+    <option value="MC">Multiple choice (single-select)</option>
+    <option value="MS">Multiple select (checkboxes)</option>
+    <option value="TE">Text entry</option>
+  </select>
+</div>
+
+<button id="moveUpBtn" class="button" disabled>Move up</button>
   <button id="moveDownBtn" class="button" disabled>Move down</button>
 </div>
 
