@@ -383,3 +383,68 @@ body {
 .draggable-item.dragging { opacity: 0.6; }
 .draggable-item.drop-above { border-top: 2px solid #fbbf24; }
 .draggable-item.drop-below { border-bottom: 2px solid #fbbf24; }
+
+
+.add-block-row{
+  grid-column: 1 / -1;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.add-block-row label{
+  font-size:13px;
+  color: var(--muted);
+  font-weight:700;
+}
+.add-block-row select{
+  flex:1;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f1522;
+  color: var(--text);
+  padding: 10px;
+  font-size: 13px;
+}
+.add-block-row select:disabled{
+  opacity: 0.55;
+}
+
+.list-row{
+  display:grid;
+  grid-template-columns: 1fr 44px;
+  gap: 8px;
+  align-items: stretch;
+}
+.list-row .list-item-btn{
+  width:100%;
+}
+.icon-btn.trash{
+  border-color: var(--border);
+}
+.icon-btn.trash:hover{
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+
+/* Block list button (inside .list-row) */
+.list .list-item-btn {
+  text-align: left;
+  width: 100%;
+  padding: 10px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0f1522;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.list .list-item-btn[aria-current="true"] {
+  outline: 2px solid var(--primary);
+  border-color: transparent;
+}
+
+.badge {
+  color: var(--muted);
+  font-size: 12px;
+}
