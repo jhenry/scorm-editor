@@ -1218,6 +1218,49 @@ function applyChangesToModel() {
   renderList();
 }
 
+// ================================
+// Auto-save / Auto-apply changes
+// ================================
+// Automatically applies editor changes to the model after the user stops typing.
+
+const AUTO_APPLY_DELAY_MS = 600; // debounce delay (ms)
+let autoApplyTimer = null;
+
+function scheduleAutoApply() {
+  if (autoApplyTimer) {
+    clearTimeout(autoApplyTimer);
+  }
+
+  autoApplyTimer = setTimeout(() => {
+    try {
+      applyChangesToModel();
+      setStatus('Changes auto-saved');
+    } catch (err) {
+      console.error('Auto-apply failed', err);
+    }
+  }, AUTO_APPLY_DELAY_MS);
+}
+
+function attachAutoApplyToEditor() {
+  if (typeof tinymce === 'undefined') return;
+
+  tinymce.on('AddEditor', (e) => {
+    const ed = e.editor;
+
+    const trigger = () => scheduleAutoApply();
+
+    // Catch all meaningful edit operations
+    ed.on('Change Input Undo Redo KeyUp Paste', trigger);
+  });
+}
+
+// Attach once DOM is ready
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', attachAutoApplyToEditor);
+} else {
+  attachAutoApplyToEditor();
+}
+
 
 function buildUpdatedDataJs() {
   const json = JSON.stringify(state.surveyData, null, 2);
@@ -1242,7 +1285,6 @@ async function downloadUpdatedZip() {
   await addAssetsToZip(state.zip);
 
   // Include any newly-added media assets
-console.log(Object.keys(state.zip.files).filter(k => k.startsWith('assets/')))
   const blob = await state.zip.generateAsync({ type: "blob" });
   const outName = state.zipName
     ? state.zipName.replace(/\.zip$/i, "") + "-edited.zip"
