@@ -3,7 +3,9 @@
 // ===== Configuration =====
 const APP_CONFIG = {
   // TinyMCE license key: use 'gpl' for GPL usage, or replace with your commercial key
-  tinymceLicenseKey: 'gpl'
+  tinymceLicenseKey: 'gpl',
+  // Backend base URL (blank = same-origin when served by FastAPI)
+  apiBase: ''
 };
 
 
@@ -102,6 +104,107 @@ function normalizeSpaces(str) {
   return String(str).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
 }
 
+
+
+
+async function uploadAsset(file) {
+  const url = `${APP_CONFIG.apiBase}/api/assets`;
+  const fd = new FormData();
+  fd.append('file', file, file.name);
+
+  const res = await fetch(url, { method: 'POST', body: fd });
+  if (!res.ok) {
+    const txt = await res.text().catch(() => '');
+    throw new Error(`Upload failed (${res.status}): ${txt || res.statusText}`);
+  }
+  const data = await res.json();
+  return { url: data.url, relPath: data.relPath };
+}
+
+function collectUsedAssetRelPaths() {
+  // Collect referenced assets/ paths from survey HTML.
+  // Supports: assets/<file>, ./assets/<file>, /assets/<file>
+  // Also scans TinyMCE attributes like data-mce-src/data-mce-href.
+  const rels = new Set();
+  const items = Array.isArray(state.surveyData) ? state.surveyData : [];
+
+  const normalize = (u) => {
+    const s = String(u || '').trim();
+    if (!s) return null;
+    if (s.startsWith('assets/')) return s;
+    if (s.startsWith('./assets/')) return s.slice(2);
+    if (s.startsWith('/assets/')) return 'assets/' + s.slice('/assets/'.length);
+    return null;
+  };
+
+  const add = (u) => {
+    const n = normalize(u);
+    if (n) rels.add(n);
+  };
+
+  const parser = new DOMParser();
+
+  const scan = (html) => {
+    const doc = parser.parseFromString(`<!doctype html><html><body>${html}</body></html>`, 'text/html');
+
+    doc.querySelectorAll('[src],[href],[poster]').forEach((el) => {
+      add(el.getAttribute('src'));
+      add(el.getAttribute('href'));
+      add(el.getAttribute('poster'));
+    });
+
+    // TinyMCE tracking attrs
+    doc.querySelectorAll('[data-mce-src],[data-mce-href],[data-mce-poster]').forEach((el) => {
+      add(el.getAttribute('data-mce-src'));
+      add(el.getAttribute('data-mce-href'));
+      add(el.getAttribute('data-mce-poster'));
+    });
+
+    // Regex fallback (handles single/double/no quotes)
+    const rx = /(?:src|href|poster|data-mce-src|data-mce-href|data-mce-poster)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
+    let mm;
+    while ((mm = rx.exec(html)) !== null) {
+      add(mm[1] || mm[2] || mm[3] || '');
+    }
+  };
+
+  items.forEach((it) => {
+    const html = String(it?.text ?? '');
+    if (html) scan(html);
+  });
+
+  return Array.from(rels);
+}
+
+
+async function addAssetsToZip(zip) {
+  // Export-time asset packaging.
+  // We embed any referenced assets/<file> into the output SCORM ZIP by fetching them from the backend.
+  const rels = collectUsedAssetRelPaths();
+  if (!rels.length) return;
+
+  // Some ZIP viewers hide empty directories; ensure folder entry exists.
+  zip.folder('assets');
+
+  for (const relPath of rels) {
+    const fetchUrl = `${APP_CONFIG.apiBase}/${relPath}`;
+
+    // Avoid cached 304 responses during export.
+    let res = await fetch(fetchUrl, { cache: 'no-store' });
+    if (res.status === 304) {
+      const bust = `${fetchUrl}?v=${Date.now()}`;
+      res = await fetch(bust, { cache: 'no-store' });
+    }
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`Failed to fetch asset for export: ${relPath} (${res.status}) ${txt}`);
+    }
+
+    const buf = await res.arrayBuffer();
+    zip.file(relPath, buf);
+  }
+}
 
 
 function ensureUid(item) {
@@ -408,43 +511,71 @@ async function initBlockEditor() {
   }
 
   await tinymce.init({
-    selector: "#blockText",
+    selector: '#blockText',
     license_key: APP_CONFIG.tinymceLicenseKey,
+    automatic_uploads: true,
     menubar: false,
     branding: false,
-    plugins: "link lists code table image media",
-    toolbar: "undo redo | bold italic underline | bullist numlist | link | table | removeformat | code | image media",
+    plugins: 'link lists code table image media',
+    toolbar: 'undo redo | bold italic underline | bullist numlist | link | table | removeformat | code | image media',
     height: 360,
-    valid_elements: "*[*]",
+    valid_elements: '*[*]',
+
     file_picker_types: 'image media',
-    images_upload_handler: (blobInfo) => new Promise((resolve) => {
-      const blob = blobInfo.blob();
-      const file = new File([blob], blobInfo.filename(), { type: blob.type || 'image/png' });
-      const reg = registerAsset(file);
-      resolve(reg.objUrl);
-    }),
+
     file_picker_callback: (callback, _value, meta) => {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = meta.filetype === 'image' ? 'image/*' : 'video/*,audio/*';
-      input.onchange = () => {
+      input.onchange = async () => {
         const file = input.files && input.files[0];
         if (!file) return;
-        const reg = registerAsset(file);
-        callback(reg.objUrl, { title: file.name });
+        try {
+          const up = await uploadAsset(file);
+          callback(up.relPath, { title: file.name });
+          if (state.selectedIndex >= 0) renderPreview(state.surveyData[state.selectedIndex]);
+        } catch (err) {
+          console.error(err);
+          setStatus(`Upload error: ${err.message}`);
+        }
       };
       input.click();
+    },
+
+    images_upload_handler: (blobInfo) => new Promise(async (resolve, reject) => {
+      try {
+        const blob = blobInfo.blob();
+        const file = new File([blob], blobInfo.filename(), { type: blob.type || 'image/png' });
+        const up = await uploadAsset(file);
+        resolve(up.relPath);
+        if (state.selectedIndex >= 0) renderPreview(state.surveyData[state.selectedIndex]);
+      } catch (err) {
+        console.error(err);
+        reject(err.message);
+      }
+    }),
+
+    setup: (editor) => {
+      const refresh = () => {
+        try { els.blockTextRaw.value = editor.getContent(); } catch {}
+        if (state.selectedIndex >= 0) {
+          renderPreview(state.surveyData[state.selectedIndex]);
+          renderList();
+          if (state.activeTab === 'diff') renderDiff();
+        }
+      };
+
+      editor.on('input', refresh);
+      editor.on('change', refresh);
+      editor.on('undo', refresh);
+      editor.on('redo', refresh);
+      editor.on('SetContent', refresh);
     }
   });
 
   state.tinymceReady = true;
-
-  tinymce.get("blockText").on("input change keyup", () => {
-    if (state.activeTab === "diff") renderDiff();
-    renderList();
-  });
-  ensureSelectionVisible();
 }
+
 
 function getCurrentBlockHtml() {
   if (state.activeTab === "raw") return els.blockTextRaw.value;
@@ -794,6 +925,10 @@ function renderPreview(item) {
   const isChoice = item?.type === 'MC' && choices;
   const isTextEntry = item?.type === 'TE';
 
+  const liveHtml = (typeof getCurrentBlockHtml === 'function' && state.selectedIndex >= 0 && state.surveyData[state.selectedIndex] === item)
+    ? getCurrentBlockHtml()
+    : (item.text || '');
+
   const choiceHtml = isChoice
     ? sortedChoiceKeys(choices)
       .map((k) => {
@@ -807,26 +942,31 @@ function renderPreview(item) {
 
   const teHtml = isTextEntry
     ? `<div style="margin-top:16px;">
-        <label style="display:block;margin-bottom:6px;font-weight:600;">Answer</label>
-        <input type="text" style="width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;" />
-      </div>`
+  <label style="display:block;margin-bottom:6px;font-weight:600;">Answer</label>
+  <input type="text" style="width:100%;padding:10px;border:1px solid #d0d5dd;border-radius:8px;" />
+</div>`
     : "";
+
+  const baseHref = new URL('.', window.location.href).href;
 
   const doc = `<!doctype html>
 <html>
-<head><meta charset="utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1" /></head>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <base href="${baseHref}">
+</head>
 <body style="background:#ffffff;color:#000000;font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; padding: 16px;">
-  <article>${getDisplayHtml(item.text)}</article>
+  <article>${getDisplayHtml(liveHtml)}</article>
   ${choiceHtml ? `<form style="margin-top:16px;">${choiceHtml}</form>` : ""}
   ${teHtml}
 </body>
 </html>`;
 
-  const blob = new Blob([doc], { type: "text/html" });
-  const url = URL.createObjectURL(blob);
-  els.previewFrame.src = url;
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  els.previewFrame.removeAttribute('src');
+  els.previewFrame.srcdoc = doc;
 }
+
 
 
 // ===== Diff =====
@@ -1079,13 +1219,6 @@ function applyChangesToModel() {
 }
 
 
-function addAssetsToZip(zip) {
-  // Writes registered assets into the output SCORM zip.
-  // Note: assets referenced by relative path in HTML.
-  state.assetByObjectUrl.forEach((meta) => {
-    zip.file(meta.relPath, meta.file);
-  });
-}
 function buildUpdatedDataJs() {
   const json = JSON.stringify(state.surveyData, null, 2);
   return `${state.keyword || "const"} ${state.varName || "surveyData"} = ${json};\n`;
@@ -1105,10 +1238,11 @@ async function downloadUpdatedZip() {
 
   state.zip.file(state.dataJsPath, buildUpdatedDataJs());
 
-  // Include any newly-added media assets
-  addAssetsToZip(state.zip);
-  addAssetsToZip(state.zip);
+  // Include persisted uploads
+  await addAssetsToZip(state.zip);
 
+  // Include any newly-added media assets
+console.log(Object.keys(state.zip.files).filter(k => k.startsWith('assets/')))
   const blob = await state.zip.generateAsync({ type: "blob" });
   const outName = state.zipName
     ? state.zipName.replace(/\.zip$/i, "") + "-edited.zip"
@@ -1139,9 +1273,10 @@ async function saveAsWithFileSystemApi() {
 
   state.zip.file(state.dataJsPath, buildUpdatedDataJs());
 
+  // Include persisted uploads
+  await addAssetsToZip(state.zip);
+
   // Include any newly-added media assets
-  addAssetsToZip(state.zip);
-  addAssetsToZip(state.zip);
 
   const blob = await state.zip.generateAsync({ type: "blob" });
   const suggestedName = (state.zipName || "scorm.zip").replace(/\.zip$/i, "") + "-edited.zip";
