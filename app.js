@@ -122,34 +122,90 @@ async function uploadAsset(file) {
 }
 
 function collectUsedAssetRelPaths() {
+  // Collect referenced assets/ paths from survey HTML.
+  // Supports: assets/<file>, ./assets/<file>, /assets/<file>
+  // Also scans TinyMCE attributes like data-mce-src/data-mce-href.
   const rels = new Set();
-  const rx = /(?:src|href)\s*=\s*"(assets\/[^"]+)"/gi;
+  const items = Array.isArray(state.surveyData) ? state.surveyData : [];
 
-  (state.surveyData || []).forEach((it) => {
-    const html = String(it?.text ?? '');
-    let m;
-    while ((m = rx.exec(html)) !== null) {
-      rels.add(m[1]);
+  const normalize = (u) => {
+    const s = String(u || '').trim();
+    if (!s) return null;
+    if (s.startsWith('assets/')) return s;
+    if (s.startsWith('./assets/')) return s.slice(2);
+    if (s.startsWith('/assets/')) return 'assets/' + s.slice('/assets/'.length);
+    return null;
+  };
+
+  const add = (u) => {
+    const n = normalize(u);
+    if (n) rels.add(n);
+  };
+
+  const parser = new DOMParser();
+
+  const scan = (html) => {
+    const doc = parser.parseFromString(`<!doctype html><html><body>${html}</body></html>`, 'text/html');
+
+    doc.querySelectorAll('[src],[href],[poster]').forEach((el) => {
+      add(el.getAttribute('src'));
+      add(el.getAttribute('href'));
+      add(el.getAttribute('poster'));
+    });
+
+    // TinyMCE tracking attrs
+    doc.querySelectorAll('[data-mce-src],[data-mce-href],[data-mce-poster]').forEach((el) => {
+      add(el.getAttribute('data-mce-src'));
+      add(el.getAttribute('data-mce-href'));
+      add(el.getAttribute('data-mce-poster'));
+    });
+
+    // Regex fallback (handles single/double/no quotes)
+    const rx = /(?:src|href|poster|data-mce-src|data-mce-href|data-mce-poster)\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/gi;
+    let mm;
+    while ((mm = rx.exec(html)) !== null) {
+      add(mm[1] || mm[2] || mm[3] || '');
     }
+  };
+
+  items.forEach((it) => {
+    const html = String(it?.text ?? '');
+    if (html) scan(html);
   });
 
   return Array.from(rels);
 }
 
+
 async function addAssetsToZip(zip) {
+  // Export-time asset packaging.
+  // We embed any referenced assets/<file> into the output SCORM ZIP by fetching them from the backend.
   const rels = collectUsedAssetRelPaths();
   if (!rels.length) return;
 
+  // Some ZIP viewers hide empty directories; ensure folder entry exists.
+  zip.folder('assets');
+
   for (const relPath of rels) {
     const fetchUrl = `${APP_CONFIG.apiBase}/${relPath}`;
-    const res = await fetch(fetchUrl);
-    if (!res.ok) {
-      throw new Error(`Failed to fetch asset for export: ${relPath} (${res.status})`);
+
+    // Avoid cached 304 responses during export.
+    let res = await fetch(fetchUrl, { cache: 'no-store' });
+    if (res.status === 304) {
+      const bust = `${fetchUrl}?v=${Date.now()}`;
+      res = await fetch(bust, { cache: 'no-store' });
     }
+
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      throw new Error(`Failed to fetch asset for export: ${relPath} (${res.status}) ${txt}`);
+    }
+
     const buf = await res.arrayBuffer();
     zip.file(relPath, buf);
   }
 }
+
 
 function ensureUid(item) {
   if (!item) return null;
@@ -1163,13 +1219,6 @@ function applyChangesToModel() {
 }
 
 
-function addAssetsToZip(zip) {
-  // Writes registered assets into the output SCORM zip.
-  // Note: assets referenced by relative path in HTML.
-  state.assetByObjectUrl.forEach((meta) => {
-    zip.file(meta.relPath, meta.file);
-  });
-}
 function buildUpdatedDataJs() {
   const json = JSON.stringify(state.surveyData, null, 2);
   return `${state.keyword || "const"} ${state.varName || "surveyData"} = ${json};\n`;
@@ -1193,9 +1242,7 @@ async function downloadUpdatedZip() {
   await addAssetsToZip(state.zip);
 
   // Include any newly-added media assets
-  addAssetsToZip(state.zip);
-  addAssetsToZip(state.zip);
-
+console.log(Object.keys(state.zip.files).filter(k => k.startsWith('assets/')))
   const blob = await state.zip.generateAsync({ type: "blob" });
   const outName = state.zipName
     ? state.zipName.replace(/\.zip$/i, "") + "-edited.zip"
@@ -1230,8 +1277,6 @@ async function saveAsWithFileSystemApi() {
   await addAssetsToZip(state.zip);
 
   // Include any newly-added media assets
-  addAssetsToZip(state.zip);
-  addAssetsToZip(state.zip);
 
   const blob = await state.zip.generateAsync({ type: "blob" });
   const suggestedName = (state.zipName || "scorm.zip").replace(/\.zip$/i, "") + "-edited.zip";
